@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2018 The Google AI Team Authors.
+# Copyright 2019 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,38 +12,40 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 # Lint as: python2, python3
 # coding=utf-8
 """Create masked LM/next sentence masked_lm TF examples for ALBERT."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+from __future__ import absolute_import, division, print_function
+
 import collections
+import json
 import random
-import tokenization
+
 import numpy as np
 import six
-from six.moves import range
-from six.moves import zip
 import tensorflow as tf
+from absl import app, flags, logging
+from six.moves import range, zip
 
-flags = tf.flags
+import tokenization
+from tqdm import tqdm, trange
 
 FLAGS = flags.FLAGS
 
-flags.DEFINE_string("input_file", 'test/data/sample.txt',
+flags.DEFINE_string("input_file", None,
                     "Input raw text file (or comma-separated list of files).")
 
 flags.DEFINE_string(
-    "output_file", "test/data/processed/sample",
+    "output_file", None,
     "Output TF example file (or comma-separated list of files).")
 
 flags.DEFINE_string(
-    "vocab_file", 'models/assets/30k-clean.vocab',
+    "vocab_file", None,
     "The vocabulary file that the ALBERT model was trained on.")
 
-flags.DEFINE_string("spm_model_file", "models/assets/30k-clean.model",
+flags.DEFINE_string("spm_model_file", None,
                     "The model file for sentence piece tokenization.")
 
 flags.DEFINE_bool(
@@ -78,6 +80,9 @@ flags.DEFINE_integer("max_predictions_per_seq", 20,
 
 flags.DEFINE_integer("random_seed", 12345, "Random seed for data generation.")
 
+flags.DEFINE_string("meta_data_file_path", None,
+                    "The path in which input meta data will be written.")
+
 flags.DEFINE_integer(
     "dupe_factor", 40,
     "Number of times to duplicate the input data (with different masks).")
@@ -88,6 +93,7 @@ flags.DEFINE_float(
     "short_seq_prob", 0.1,
     "Probability of creating sequences which are shorter than the "
     "maximum length.")
+
 
 
 class TrainingInstance(object):
@@ -126,7 +132,7 @@ def write_instance_to_example_files(instances, tokenizer, max_seq_length,
   """Create TF example files from `TrainingInstance`s."""
   writers = []
   for output_file in output_files:
-    writers.append(tf.python_io.TFRecordWriter(output_file))
+    writers.append(tf.io.TFRecordWriter(output_file))
 
   writer_index = 0
 
@@ -182,8 +188,8 @@ def write_instance_to_example_files(instances, tokenizer, max_seq_length,
     total_written += 1
 
     if inst_index < 20:
-      tf.logging.info("*** Example ***")
-      tf.logging.info("tokens: %s" % " ".join(
+      logging.info("*** Example ***")
+      logging.info("tokens: %s" % " ".join(
           [tokenization.printable_text(x) for x in instance.tokens]))
 
       for feature_name in features.keys():
@@ -193,13 +199,21 @@ def write_instance_to_example_files(instances, tokenizer, max_seq_length,
           values = feature.int64_list.value
         elif feature.float_list.value:
           values = feature.float_list.value
-        tf.logging.info(
+        logging.info(
             "%s: %s" % (feature_name, " ".join([str(x) for x in values])))
 
   for writer in writers:
     writer.close()
-
-  tf.logging.info("Wrote %d total instances", total_written)
+  
+  meta_data = {
+      "task_type": "albert_pretraining",
+      "train_data_size": total_written,
+      "max_seq_length": max_seq_length,
+      "max_predictions_per_seq":FLAGS.max_predictions_per_seq
+  }
+  with tf.io.gfile.GFile(FLAGS.meta_data_file_path, "w") as writer:
+        writer.write(json.dumps(meta_data, indent=4) + "\n")
+  logging.info("Wrote %d total instances", total_written)
 
 
 def create_int_feature(values):
@@ -224,8 +238,8 @@ def create_training_instances(input_files, tokenizer, max_seq_length,
   # sentence boundaries for the "next sentence prediction" task).
   # (2) Blank lines between documents. Document boundaries are needed so
   # that the "next sentence prediction" task doesn't span between documents.
-  for input_file in input_files:
-    with tf.gfile.GFile(input_file, "r") as reader:
+  for input_file in tqdm(input_files):
+    with tf.io.gfile.GFile(input_file, "r") as reader:
       while True:
         line = reader.readline()
         if not FLAGS.spm_model_file:
@@ -250,8 +264,8 @@ def create_training_instances(input_files, tokenizer, max_seq_length,
 
   vocab_words = list(tokenizer.vocab.keys())
   instances = []
-  for _ in range(dupe_factor):
-    for document_index in range(len(all_documents)):
+  for _ in trange(dupe_factor):
+    for document_index in trange(len(all_documents)):
       instances.extend(
           create_instances_from_document(
               all_documents, document_index, max_seq_length, short_seq_prob,
@@ -395,7 +409,7 @@ def _is_start_piece_sp(piece):
   special_pieces.add(u"£".encode("utf-8"))
   # Note(mingdachen):
   # For foreign characters, we always treat them as a whole piece.
-  english_chars = set(list("abcdefghijklmnopqrstuvwxyz"))
+  english_chars = set(list("abcdefghijklmnopqrstuvwhyz"))
   if (six.ensure_str(piece).startswith("▁") or
       six.ensure_str(piece).startswith("<") or piece in special_pieces or
       not all([i.lower() in english_chars.union(special_pieces)
@@ -615,7 +629,7 @@ def truncate_seq_pair(tokens_a, tokens_b, max_num_tokens, rng):
 
 
 def main(_):
-  tf.logging.set_verbosity(tf.logging.INFO)
+  logging.set_verbosity(logging.INFO)
 
   tokenizer = tokenization.FullTokenizer(
       vocab_file=FLAGS.vocab_file, do_lower_case=FLAGS.do_lower_case,
@@ -623,11 +637,11 @@ def main(_):
 
   input_files = []
   for input_pattern in FLAGS.input_file.split(","):
-    input_files.extend(tf.gfile.Glob(input_pattern))
+    input_files.extend(tf.io.gfile.glob(input_pattern))
 
-  tf.logging.info("*** Reading from input files ***")
+  logging.info("*** Reading from input files ***")
   for input_file in input_files:
-    tf.logging.info("  %s", input_file)
+    logging.info("  %s", input_file)
 
   rng = random.Random(FLAGS.random_seed)
   instances = create_training_instances(
@@ -635,12 +649,12 @@ def main(_):
       FLAGS.short_seq_prob, FLAGS.masked_lm_prob, FLAGS.max_predictions_per_seq,
       rng)
 
-  tf.logging.info("number of instances: %i", len(instances))
+  logging.info("number of instances: %i", len(instances))
 
   output_files = FLAGS.output_file.split(",")
-  tf.logging.info("*** Writing to output files ***")
+  logging.info("*** Writing to output files ***")
   for output_file in output_files:
-    tf.logging.info("  %s", output_file)
+    logging.info("  %s", output_file)
 
   write_instance_to_example_files(instances, tokenizer, FLAGS.max_seq_length,
                                   FLAGS.max_predictions_per_seq, output_files)
@@ -649,5 +663,6 @@ def main(_):
 if __name__ == "__main__":
   flags.mark_flag_as_required("input_file")
   flags.mark_flag_as_required("output_file")
-  flags.mark_flag_as_required("vocab_file")
-  tf.app.run()
+  flags.mark_flag_as_required("spm_model_file")
+  flags.mark_flag_as_required("meta_data_file_path")
+  app.run(main)
