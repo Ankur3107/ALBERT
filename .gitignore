@@ -115,3 +115,4 @@ dmypy.json
 # Pyre type checker
 .pyre/
 models
+tmp/model.tar.gz
