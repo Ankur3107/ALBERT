@@ -116,3 +116,8 @@ dmypy.json
 .pyre/
 models
 tmp/model.tar.gz
+ALBERT-TF2.0/.vscode/
+ALBERT-TF2.0/.DS_Store
+ALBERT-TF2.0/nq_test/data/
+ALBERT-TF2.0/nq_test/.DS_Store
+.DS_Store
